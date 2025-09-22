@@ -8,14 +8,25 @@ import queue
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-import paho.mqtt.client as mqtt
 import tkinter as tk
 from tkinter import messagebox
-import yaml
 
-from manifest import GameEntry, Manifest, ManifestError
+from dependency_guard import ensure_dependencies
 
 LOGGER = logging.getLogger("orchestrator.ui")
+
+
+def _show_dependency_error(module: str, message: str) -> None:
+    LOGGER.error(message)
+    messagebox.showerror("Missing dependency", message)
+
+
+ensure_dependencies(("paho.mqtt.client", "yaml"), _show_dependency_error)
+
+import paho.mqtt.client as mqtt  # noqa: E402
+import yaml  # noqa: E402
+
+from manifest import GameEntry, Manifest, ManifestError  # noqa: E402
 
 
 def load_yaml(path: str) -> Dict[str, Any]:

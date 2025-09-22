@@ -3,7 +3,12 @@ import os
 import threading
 import time
 
-import paho.mqtt.client as mqtt
+import pytest
+
+mqtt = pytest.importorskip(
+    "paho.mqtt.client",
+    reason="paho-mqtt is required for the orchestrator smoke test",
+)
 
 
 def load_ports_yaml():

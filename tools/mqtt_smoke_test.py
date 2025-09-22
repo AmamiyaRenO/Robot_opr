@@ -4,7 +4,10 @@ import queue
 import threading
 import time
 
-import paho.mqtt.client as mqtt
+try:
+    import paho.mqtt.client as mqtt
+except ImportError:  # pragma: no cover - exercised in environments without paho
+    mqtt = None
 
 
 def load_ports_yaml():
@@ -15,6 +18,13 @@ def load_ports_yaml():
 
 
 def main():
+    if mqtt is None:
+        print(
+            "Missing dependency 'paho.mqtt.client'. Please run "
+            "'pip install -r releases/current/orchestrator/requirements.txt' first.",
+        )
+        return 1
+
     cfg = load_ports_yaml()
     host = cfg['mqtt']['host']
     port = int(cfg['mqtt']['port'])
