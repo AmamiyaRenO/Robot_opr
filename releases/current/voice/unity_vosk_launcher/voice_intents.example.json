@@ -1,0 +1,10 @@
+{
+  "WakeWord": "嘿机器人",
+  "LaunchKeywords": ["打开", "启动", "open", "play"],
+  "ExitKeywords": ["退出", "回到大厅", "quit", "back to lobby"],
+  "SynonymOverrides": [
+    { "Spoken": "Sample Notepad", "GameName": "记事本" },
+    { "Spoken": "记事本", "GameName": "记事本" },
+    { "Spoken": "notebook", "GameName": "记事本" }
+  ]
+}
