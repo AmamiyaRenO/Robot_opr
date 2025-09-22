@@ -1,193 +1,184 @@
+"""MQTT-driven orchestrator responsible for launching games."""
+from __future__ import annotations
+
 import json
 import logging
 import os
-import signal
-import subprocess
-import sys
 import time
-from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import paho.mqtt.client as mqtt
-import psutil
 import yaml
-from jsonschema import validate
 
+from healthcheck import HealthCheckDefaults, HealthCheckError, HealthChecker
+from intent_router import Intent, IntentRouter
+from manifest import Manifest, ManifestError
+from process_manager import ProcessExit, ProcessManager
 
 LOGGER = logging.getLogger("orchestrator")
 
 
-def setup_logging():
-    # Simple JSON logger to stdout (UTC)
+def setup_logging() -> None:
+    """Configure a JSON-style logger with UTC timestamps."""
     logging.basicConfig(
         level=logging.INFO,
         format='{"ts": "%(asctime)sZ", "level": "%(levelname)s", "service": "%(name)s", "msg": "%(message)s"}',
-        datefmt='%Y-%m-%dT%H:%M:%S'
+        datefmt="%Y-%m-%dT%H:%M:%S",
     )
+    logging.Formatter.converter = time.gmtime
 
 
-def load_yaml(path: str) -> dict:
-    with open(path, 'r', encoding='utf-8') as f:
-        return yaml.safe_load(f)
-
-
-def load_json(path: str) -> dict:
-    with open(path, 'r', encoding='utf-8') as f:
-        return json.load(f)
-
-
-@dataclass
-class GameEntry:
-    id: str
-    name: str
-    exec: str
-    synonyms: List[str]
-    workdir: Optional[str] = None
-    args: Optional[List[str]] = None
-    env: Optional[Dict[str, str]] = None
-    healthcheck: Optional[Dict] = None
-
-
-class Manifest:
-    def __init__(self, manifest_path: str, schema_path: str):
-        data = load_json(manifest_path)
-        schema = load_json(schema_path)
-        validate(instance=data, schema=schema)
-        self._games: Dict[str, GameEntry] = {}
-        self._syn_to_id: Dict[str, str] = {}
-        for g in data['games']:
-            entry = GameEntry(
-                id=g['id'], name=g['name'], exec=g['exec'], synonyms=[s.lower() for s in g['synonyms']],
-                workdir=g.get('workdir'), args=g.get('args') or [], env=g.get('env') or {}, healthcheck=g.get('healthcheck') or {}
-            )
-            self._games[entry.id] = entry
-            for s in entry.synonyms + [entry.name.lower(), entry.id.lower()]:
-                self._syn_to_id[s] = entry.id
-
-    def resolve(self, spoken: str) -> Optional[GameEntry]:
-        key = (spoken or '').lower().strip()
-        gid = self._syn_to_id.get(key)
-        return self._games.get(gid) if gid else None
-
-
-class ProcessManager:
-    def __init__(self):
-        self._proc: Optional[psutil.Process] = None
-        self._game: Optional[GameEntry] = None
-
-    def is_running(self) -> bool:
-        return self._proc is not None and self._proc.is_running()
-
-    def start(self, game: GameEntry):
-        if self.is_running():
-            raise RuntimeError("A game is already running")
-        env = os.environ.copy()
-        env.update(game.env or {})
-        cmd = [game.exec] + (game.args or [])
-        LOGGER.info(f"launching: {cmd}")
-        p = subprocess.Popen(cmd, cwd=game.workdir or None, env=env)
-        self._proc = psutil.Process(p.pid)
-        self._game = game
-
-    def stop(self, timeout_sec: float = 3.0):
-        if not self.is_running():
-            return
-        proc = self._proc
-        assert proc is not None
-        LOGGER.info("stopping current game")
-        try:
-            for child in proc.children(recursive=True):
-                child.terminate()
-            proc.terminate()
-            gone, alive = psutil.wait_procs([proc], timeout=timeout_sec)
-            if alive:
-                LOGGER.warning("force killing remaining process")
-                for p in alive:
-                    p.kill()
-        finally:
-            self._proc = None
-            self._game = None
-
-    @property
-    def current_game_id(self) -> Optional[str]:
-        return self._game.id if self._game else None
+def load_yaml(path: str) -> Dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
 
 
 class Orchestrator:
     def __init__(self, repo_root: str):
-        cfg = load_yaml(os.path.join(repo_root, 'config', 'ports.yaml'))
-        self._topics = cfg['topics']
-        self._mqtt_host = cfg['mqtt']['host']
-        self._mqtt_port = int(cfg['mqtt']['port'])
+        cfg = load_yaml(os.path.join(repo_root, "config", "ports.yaml"))
+        mqtt_cfg = cfg.get("mqtt", {})
+        topics_cfg = cfg.get("topics", {})
+        health_cfg = cfg.get("healthcheck", {})
+
+        self._topics = topics_cfg
+        self._mqtt_host = mqtt_cfg.get("host", "127.0.0.1")
+        self._mqtt_port = int(mqtt_cfg.get("port", 1883))
         self._manifest = Manifest(
-            os.path.join(repo_root, 'config', 'manifest.json'),
-            os.path.join(repo_root, 'config', 'manifest.schema.json'),
+            os.path.join(repo_root, "config", "manifest.json"),
+            os.path.join(repo_root, "config", "manifest.schema.json"),
         )
+        defaults = HealthCheckDefaults(
+            timeout_sec=float(health_cfg.get("default_timeout_sec", 5.0)),
+            interval_sec=float(health_cfg.get("default_interval_sec", 0.2)),
+        )
+        self._health = HealthChecker(defaults)
         self._pm = ProcessManager()
         self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="orchestrator")
+        if mqtt_cfg.get("username"):
+            self._client.username_pw_set(mqtt_cfg.get("username"), mqtt_cfg.get("password") or None)
         self._client.on_connect = self._on_connect
         self._client.on_message = self._on_message
+        self._router = IntentRouter(self._handle_launch_intent, self._handle_exit_intent)
 
-    def _publish_state(self, mode: str, detail: str = ""):
+    def _publish_state(self, mode: str, detail: str = "", game_id: Optional[str] = None) -> None:
         payload = {
             "mode": mode,
-            "game_id": self._pm.current_game_id,
+            "game_id": game_id or self._pm.current_game_id,
             "detail": detail,
-            "ts": time.time()
+            "ts": time.time(),
         }
-        self._client.publish(self._topics['state'], json.dumps(payload))
+        LOGGER.debug("publishing state", extra={"payload": payload})
+        self._client.publish(self._topics.get("state", "robot/state"), json.dumps(payload))
 
     def _on_connect(self, client, userdata, flags, reason_code, properties=None):
-        LOGGER.info("connected to mqtt")
-        client.subscribe(self._topics['intent'])
+        LOGGER.info("connected to mqtt", extra={"reason_code": reason_code})
+        client.subscribe(self._topics.get("intent", "robot/intent"))
         self._publish_state("IDLE" if not self._pm.is_running() else "RUNNING")
 
     def _on_message(self, client, userdata, msg):
         try:
-            payload = json.loads(msg.payload.decode('utf-8'))
-        except Exception as e:
-            LOGGER.error(f"invalid payload: {e}")
+            payload = json.loads(msg.payload.decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            LOGGER.error("invalid payload", extra={"error": str(exc)})
             return
-        intent_type = (payload.get('type') or '').upper()
-        if intent_type == 'LAUNCH_GAME':
-            spoken = payload.get('game_name') or payload.get('game') or ''
-            game = self._manifest.resolve(spoken)
-            if not game:
-                self._publish_state("ERROR", f"unknown game: {spoken}")
-                return
-            try:
-                self._publish_state("STOPPING")
-                self._pm.stop()
-                self._publish_state("STARTING", game.id)
-                self._pm.start(game)
-                self._publish_state("RUNNING")
-            except Exception as e:
-                LOGGER.exception("launch failed")
-                self._publish_state("ERROR", str(e))
-        elif intent_type in ('BACK_HOME', 'QUIT'):
-            try:
-                self._publish_state("STOPPING")
-                self._pm.stop()
-                self._publish_state("IDLE")
-            except Exception as e:
-                LOGGER.exception("stop failed")
-                self._publish_state("ERROR", str(e))
-        else:
-            LOGGER.info(f"ignore intent: {intent_type}")
+        self._router.dispatch(payload)
 
-    def run(self):
+    def _handle_launch_intent(self, intent: Intent) -> None:
+        spoken = intent.game_name or ""
+        game = self._manifest.resolve(spoken)
+        if not game:
+            detail = f"unknown game: {spoken}"
+            LOGGER.warning(detail)
+            self._publish_state("ERROR", detail)
+            return
+
+        if self._pm.is_running():
+            self._publish_state("STOPPING")
+            exit_info = self._pm.stop()
+            self._handle_process_exit(exit_info)
+
+        LOGGER.info("launching game", extra={"game_id": game.id, "source": intent.source})
+        try:
+            self._publish_state("STARTING", game_id=game.id)
+            self._pm.start(game)
+            self._health.wait_until_healthy(game)
+        except HealthCheckError as exc:
+            LOGGER.error("healthcheck failed", extra={"game_id": game.id, "detail": str(exc)})
+            self._publish_state("ERROR", str(exc), game_id=game.id)
+            exit_info = self._pm.stop()
+            if exit_info:
+                self._handle_process_exit(exit_info)
+            return
+        except Exception as exc:
+            LOGGER.exception("launch failed", extra={"game_id": game.id})
+            self._publish_state("ERROR", str(exc), game_id=game.id)
+            exit_info = self._pm.stop()
+            if exit_info:
+                self._handle_process_exit(exit_info)
+            return
+
+        self._publish_state("RUNNING", game_id=game.id)
+
+    def _handle_exit_intent(self, intent: Intent) -> None:
+        if not self._pm.is_running():
+            LOGGER.info("received exit intent while idle")
+            self._publish_state("IDLE")
+            return
+
+        LOGGER.info("stopping game due to exit intent", extra={"source": intent.source})
+        self._publish_state("STOPPING")
+        exit_info = self._pm.stop()
+        self._handle_process_exit(exit_info)
+
+    def _handle_process_exit(self, exit_info: Optional[ProcessExit]) -> None:
+        if not exit_info:
+            return
+        if exit_info.expected:
+            LOGGER.info(
+                "game exited",
+                extra={"game_id": exit_info.game_id, "returncode": exit_info.returncode},
+            )
+            self._publish_state("IDLE")
+        else:
+            detail = (
+                f"game {exit_info.game_id or 'unknown'} crashed"
+                f" (code={exit_info.returncode})"
+            )
+            LOGGER.error(detail)
+            self._publish_state("IDLE", detail)
+
+    def _poll_for_exit(self) -> None:
+        exit_info = self._pm.poll_exit()
+        if exit_info and not exit_info.expected:
+            self._handle_process_exit(exit_info)
+
+    def run(self) -> None:
         LOGGER.info("starting orchestrator loop")
         self._client.connect(self._mqtt_host, self._mqtt_port, keepalive=10)
-        self._client.loop_forever()
+        self._client.loop_start()
+        try:
+            while True:
+                self._poll_for_exit()
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            LOGGER.info("keyboard interrupt received, shutting down")
+        finally:
+            self._client.loop_stop()
+            self._client.disconnect()
+            exit_info = self._pm.stop()
+            self._handle_process_exit(exit_info)
 
 
-def main():
+def main() -> None:
     setup_logging()
-    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
-    orch = Orchestrator(repo_root)
-    orch.run()
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    try:
+        orchestrator = Orchestrator(repo_root)
+    except ManifestError as exc:
+        LOGGER.error("failed to initialise orchestrator", extra={"error": str(exc)})
+        raise SystemExit(1) from exc
+    orchestrator.run()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
-
