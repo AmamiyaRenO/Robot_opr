@@ -7,15 +7,24 @@ import os
 import time
 from typing import Any, Dict, Optional
 
-import paho.mqtt.client as mqtt
-import yaml
-
-from healthcheck import HealthCheckDefaults, HealthCheckError, HealthChecker
-from intent_router import Intent, IntentRouter
-from manifest import Manifest, ManifestError
-from process_manager import ProcessExit, ProcessManager
+from dependency_guard import ensure_dependencies
 
 LOGGER = logging.getLogger("orchestrator")
+
+
+def _log_dependency_error(module: str, message: str) -> None:
+    LOGGER.error(message)
+
+
+ensure_dependencies(("paho.mqtt.client", "yaml"), _log_dependency_error)
+
+import paho.mqtt.client as mqtt  # noqa: E402
+import yaml  # noqa: E402
+
+from healthcheck import HealthCheckDefaults, HealthCheckError, HealthChecker  # noqa: E402
+from intent_router import Intent, IntentRouter  # noqa: E402
+from manifest import Manifest, ManifestError  # noqa: E402
+from process_manager import ProcessExit, ProcessManager  # noqa: E402
 
 
 def setup_logging() -> None:
