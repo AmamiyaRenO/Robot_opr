@@ -1,0 +1,14 @@
+{
+  "games": [
+    {
+      "id": "sample_notepad",
+      "name": "Sample Notepad",
+      "synonyms": ["记事本", "notepad", "notebook"],
+      "exec": "notepad.exe",
+      "args": [],
+      "env": {},
+      "healthcheck": {"type": "none"}
+    }
+  ]
+}
+

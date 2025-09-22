@@ -1,0 +1,47 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Game Manifest Schema",
+  "type": "object",
+  "properties": {
+    "games": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "exec", "synonyms"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "name": {"type": "string", "minLength": 1},
+          "synonyms": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1
+          },
+          "exec": {"type": "string", "minLength": 1},
+          "workdir": {"type": "string"},
+          "args": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "env": {
+            "type": "object",
+            "additionalProperties": {"type": "string"}
+          },
+          "healthcheck": {
+            "type": "object",
+            "properties": {
+              "type": {"type": "string", "enum": ["http", "none"], "default": "http"},
+              "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+              "path": {"type": "string", "default": "/health"},
+              "timeout_sec": {"type": "number", "minimum": 0}
+            },
+            "required": ["type"]
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["games"],
+  "additionalProperties": false
+}
+

@@ -1,0 +1,23 @@
+mqtt:
+  host: 127.0.0.1
+  port: 1883
+  username: ""
+  password: ""
+
+topics:
+  intent: robot/intent
+  state: robot/state
+  overlay: robot/overlay
+  overlay_confirm: robot/overlay/confirm
+  sensor_prefix: robot/sensor/
+  telemetry_prefix: robot/telemetry/
+
+healthcheck:
+  default_timeout_sec: 5
+  default_interval_sec: 0.2
+
+logging:
+  dir: logs
+  rotation_bytes: 1048576   # 1 MB
+  backup_count: 3
+
