@@ -3,12 +3,47 @@
     {
       "id": "sample_notepad",
       "name": "Sample Notepad",
-      "synonyms": ["记事本", "notepad", "notebook"],
+      "synonyms": ["notepad", "notebook"],
       "exec": "notepad.exe",
       "args": [],
+      "env": {},
+      "healthcheck": {"type": "none"}
+    },
+    {
+      "id": "voice_flippy_bird",
+      "name": "Voice Flippy Bird",
+      "synonyms": ["flappy", "flippy", "flappy bird"],
+      "exec": "D:\\unityproject\\Voice Flippy Bird\\Flappy Bird.exe",
+      "workdir": "D:\\unityproject\\Voice Flippy Bird",
+      "args": [
+        "-logFile",
+        "D:\\unityproject\\Voice Flippy Bird\\Logs\\player.log",
+        "-screen-fullscreen",
+        "1",
+        "-screen-width",
+        "1920",
+        "-screen-height",
+        "1080"
+      ],
+      "env": {},
+      "healthcheck": {"type": "none"}
+    },
+    {
+      "id": "slow_boat",
+      "name": "Slow Boat",
+      "synonyms": ["slow boat", "boat"],
+      "exec": "D:\\unityproject\\Slow_Boat\\MediaPipe.exe",
+      "workdir": "D:\\unityproject\\Slow_Boat",
+      "args": [
+        "-screen-fullscreen",
+        "1",
+        "-screen-width",
+        "1920",
+        "-screen-height",
+        "1080"
+      ],
       "env": {},
       "healthcheck": {"type": "none"}
     }
   ]
 }
-
